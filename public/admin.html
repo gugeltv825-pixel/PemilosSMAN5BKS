@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin | Pemilos SMAN 5 BKS</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <nav class="navbar">
+    <div class="container">
+      <a class="brand" href="/">
+        <span class="logo">P</span>
+        <span>Pemilos SMAN 5 BKS</span>
+      </a>
+      <div class="nav-links">
+        <a href="/">Beranda</a>
+        <a href="/vote">Voting</a>
+        <a href="/hasil">Hasil</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container" style="padding-top: 34px; padding-bottom: 60px; max-width: 720px;">
+    <h1 class="section-title">Panel Admin</h1>
+    <p class="section-sub">Khusus panitia pemilihan. Masukkan token admin untuk mengelola kandidat dan status voting.</p>
+
+    <div id="loginCard" class="card" style="max-width:420px;">
+      <label for="token">Token Admin</label>
+      <input type="text" id="token" placeholder="Masukkan ADMIN_TOKEN" />
+      <button class="btn btn-primary btn-block" style="margin-top:12px;" id="loginBtn">Masuk</button>
+      <div id="loginAlert" class="alert alert-error" style="margin-top:12px;"></div>
+    </div>
+
+    <div id="panel" style="display:none;">
+      <div class="stats-row">
+        <div class="stat-box"><div class="num" id="sTotalVoters">0</div><div class="label">Pemilih Sudah Memilih</div></div>
+        <div class="stat-box"><div class="num" id="sTotalVotes">0</div><div class="label">Total Suara</div></div>
+        <div class="stat-box"><div class="num" id="sStatus">-</div><div class="label">Status Voting</div></div>
+      </div>
+
+      <div class="card" style="margin-bottom:20px;">
+        <h3 style="margin-top:0;">Kontrol Pemungutan Suara</h3>
+        <div class="cta-row" style="justify-content:flex-start;">
+          <button class="btn btn-primary" id="openBtn">Buka Voting</button>
+          <button class="btn btn-outline" id="closeBtn">Tutup Voting</button>
+          <button class="btn btn-outline" id="resetBtn" style="border-color:#dc2626; color:#dc2626;">Reset Semua Suara</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:20px;">
+        <h3 style="margin-top:0;">Tambah Kandidat</h3>
+        <div id="addAlert" class="alert alert-error"></div>
+        <div class="form-grid">
+          <div><label>Nomor Urut</label><input type="text" id="c_nomor" /></div>
+          <div><label>Nama Ketua</label><input type="text" id="c_ketua" /></div>
+          <div><label>Nama Wakil</label><input type="text" id="c_wakil" /></div>
+          <div><label>Kelas</label><input type="text" id="c_kelas" /></div>
+          <div><label>Visi</label><input type="text" id="c_visi" /></div>
+          <div><label>Misi (pisahkan dengan titik koma ;)</label><input type="text" id="c_misi" /></div>
+          <div><label>Warna (hex)</label><input type="text" id="c_warna" placeholder="#2563eb" /></div>
+          <button class="btn btn-primary" id="addBtn">Tambah Kandidat</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0;">Daftar Kandidat</h3>
+        <table class="admin-table">
+          <thead><tr><th>No</th><th>Ketua & Wakil</th><th>Kelas</th><th></th></tr></thead>
+          <tbody id="candidateBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    let token = '';
+
+    function headers() {
+      return { 'Content-Type': 'application/json', 'x-admin-token': token };
+    }
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str || '';
+      return div.innerHTML;
+    }
+
+    document.getElementById('loginBtn').addEventListener('click', async () => {
+      token = document.getElementById('token').value.trim();
+      const alertBox = document.getElementById('loginAlert');
+      alertBox.className = 'alert alert-error';
+      try {
+        const res = await fetch('/api/admin/check', { headers: headers() });
+        if (!res.ok) throw new Error('Token salah');
+        document.getElementById('loginCard').style.display = 'none';
+        document.getElementById('panel').style.display = 'block';
+        refreshAll();
+      } catch (e) {
+        alertBox.classList.add('show');
+        alertBox.textContent = 'Token admin salah atau server tidak merespons.';
+      }
+    });
+
+    async function refreshAll() {
+      const res = await fetch('/api/admin/summary', { headers: headers() });
+      const data = await res.json();
+      document.getElementById('sTotalVoters').textContent = data.totalVoters;
+      document.getElementById('sTotalVotes').textContent = data.totalVotes;
+      document.getElementById('sStatus').textContent = data.votingOpen ? 'Terbuka' : 'Tertutup';
+
+      const cres = await fetch('/api/candidates');
+      const list = await cres.json();
+      document.getElementById('candidateBody').innerHTML = list
+        .map(
+          (c) => `<tr>
+            <td>${c.nomor_urut}</td>
+            <td>${escapeHtml(c.nama_ketua)} &amp; ${escapeHtml(c.nama_wakil)}</td>
+            <td>${escapeHtml(c.kelas || '')}</td>
+            <td><button class="btn btn-outline" data-del="${c.id}" style="padding:6px 12px; font-size:0.8rem;">Hapus</button></td>
+          </tr>`
+        )
+        .join('');
+
+      document.querySelectorAll('[data-del]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Hapus kandidat ini?')) return;
+          await fetch(`/api/admin/candidates/${btn.dataset.del}`, {
+            method: 'DELETE',
+            headers: headers()
+          });
+          refreshAll();
+        });
+      });
+    }
+
+    document.getElementById('openBtn').addEventListener('click', async () => {
+      await fetch('/api/admin/voting-status', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ open: true })
+      });
+      refreshAll();
+    });
+    document.getElementById('closeBtn').addEventListener('click', async () => {
+      await fetch('/api/admin/voting-status', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ open: false })
+      });
+      refreshAll();
+    });
+    document.getElementById('resetBtn').addEventListener('click', async () => {
+      if (!confirm('Yakin ingin menghapus SEMUA suara dan daftar pemilih? Tindakan ini tidak bisa dibatalkan.')) return;
+      await fetch('/api/admin/reset', { method: 'POST', headers: headers() });
+      refreshAll();
+    });
+
+    document.getElementById('addBtn').addEventListener('click', async () => {
+      const body = {
+        nomor_urut: Number(document.getElementById('c_nomor').value),
+        nama_ketua: document.getElementById('c_ketua').value.trim(),
+        nama_wakil: document.getElementById('c_wakil').value.trim(),
+        kelas: document.getElementById('c_kelas').value.trim(),
+        visi: document.getElementById('c_visi').value.trim(),
+        misi: document.getElementById('c_misi').value.trim(),
+        warna: document.getElementById('c_warna').value.trim() || '#2563eb'
+      };
+      const alertBox = document.getElementById('addAlert');
+      alertBox.className = 'alert alert-error';
+
+      const res = await fetch('/api/admin/candidates', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alertBox.classList.add('show');
+        alertBox.textContent = data.error || 'Gagal menambah kandidat.';
+        return;
+      }
+      ['c_nomor', 'c_ketua', 'c_wakil', 'c_kelas', 'c_visi', 'c_misi', 'c_warna'].forEach(
+        (id) => (document.getElementById(id).value = '')
+      );
+      refreshAll();
+    });
+  </script>
+</body>
+</html>

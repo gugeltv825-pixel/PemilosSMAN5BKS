@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voting | Pemilos SMAN 5 BKS</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <nav class="navbar">
+    <div class="container">
+      <a class="brand" href="/">
+        <span class="logo">P</span>
+        <span>Pemilos SMAN 5 BKS</span>
+      </a>
+      <div class="nav-links">
+        <a href="/">Beranda</a>
+        <a href="/vote" class="active">Voting</a>
+        <a href="/hasil">Hasil</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container" style="padding-top: 34px; padding-bottom: 60px;">
+    <h1 class="section-title">Bilik Suara</h1>
+    <p class="section-sub">Pilih satu kandidat, lalu isi data diri untuk mengonfirmasi suaramu. Halaman ini terpisah dari halaman hasil sehingga kamu tidak melihat perolehan suara saat memilih.</p>
+
+    <div id="closedNotice" class="alert alert-info">
+      Pemungutan suara sedang ditutup oleh panitia. Silakan cek kembali nanti.
+    </div>
+
+    <form id="voteForm">
+      <div class="candidate-grid" id="candidateGrid"></div>
+
+      <div class="card" style="max-width: 480px;">
+        <h3 style="margin-top:0;">Konfirmasi Pemilih</h3>
+        <div id="alertBox" class="alert"></div>
+        <div class="form-grid">
+          <div>
+            <label for="nisn">NISN</label>
+            <input type="text" id="nisn" name="nisn" placeholder="Contoh: 0051234567" required />
+          </div>
+          <div>
+            <label for="nama">Nama Lengkap</label>
+            <input type="text" id="nama" name="nama" placeholder="Nama sesuai data sekolah" required />
+          </div>
+          <div>
+            <label for="kelas">Kelas</label>
+            <input type="text" id="kelas" name="kelas" placeholder="Contoh: XI IPA 1" />
+          </div>
+          <button type="submit" class="btn btn-primary btn-block" id="submitBtn">Kirim Suara Saya</button>
+          <p class="muted-small" style="margin:0;">
+            Pilihanmu tidak dikaitkan dengan NISN saat disimpan — sistem hanya mencatat bahwa NISN ini sudah memilih, agar hasil tetap rahasia dan tidak bisa dipilih dua kali.
+          </p>
+        </div>
+      </div>
+    </form>
+  </main>
+
+  <script>
+    let selectedId = null;
+    let votingOpen = true;
+
+    function initials(name) {
+      return (name || '')
+        .split(' ')
+        .map((w) => w[0])
+        .slice(0, 2)
+        .join('')
+        .toUpperCase();
+    }
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str || '';
+      return div.innerHTML;
+    }
+
+    function showAlert(type, msg) {
+      const box = document.getElementById('alertBox');
+      box.className = `alert alert-${type} show`;
+      box.textContent = msg;
+    }
+    function hideAlert() {
+      const box = document.getElementById('alertBox');
+      box.className = 'alert';
+    }
+
+    async function loadStatus() {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      votingOpen = data.votingOpen;
+      document.getElementById('closedNotice').classList.toggle('show', !votingOpen);
+      document.getElementById('submitBtn').disabled = !votingOpen;
+    }
+
+    async function loadCandidates() {
+      const res = await fetch('/api/candidates');
+      const list = await res.json();
+      const grid = document.getElementById('candidateGrid');
+      grid.innerHTML = list
+        .map(
+          (c) => `
+        <label class="candidate-card" data-id="${c.id}">
+          <input type="radio" name="candidate" value="${c.id}" />
+          <span class="no-urut">No. ${c.nomor_urut}</span>
+          <div class="avatar" style="background:${c.warna || '#2563eb'}">${initials(c.nama_ketua)}</div>
+          <h3>${escapeHtml(c.nama_ketua)} &amp; ${escapeHtml(c.nama_wakil)}</h3>
+          <div class="kelas">${escapeHtml(c.kelas || '')}</div>
+          <p class="visi"><strong>Visi:</strong> ${escapeHtml(c.visi || '-')}</p>
+          ${
+            c.misi
+              ? `<details><summary>Lihat misi</summary><ul>${c.misi
+                  .split(';')
+                  .map((m) => `<li>${escapeHtml(m.trim())}</li>`)
+                  .join('')}</ul></details>`
+              : ''
+          }
+        </label>`
+        )
+        .join('');
+
+      grid.querySelectorAll('.candidate-card').forEach((card) => {
+        card.addEventListener('click', () => {
+          grid.querySelectorAll('.candidate-card').forEach((c) => c.classList.remove('selected'));
+          card.classList.add('selected');
+          card.querySelector('input[type="radio"]').checked = true;
+          selectedId = card.dataset.id;
+        });
+      });
+    }
+
+    document.getElementById('voteForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      hideAlert();
+
+      if (!votingOpen) {
+        showAlert('error', 'Pemungutan suara sedang ditutup.');
+        return;
+      }
+      if (!selectedId) {
+        showAlert('error', 'Silakan pilih salah satu kandidat terlebih dahulu.');
+        return;
+      }
+
+      const nisn = document.getElementById('nisn').value.trim();
+      const nama = document.getElementById('nama').value.trim();
+      const kelas = document.getElementById('kelas').value.trim();
+
+      if (!nisn || !nama) {
+        showAlert('error', 'NISN dan nama wajib diisi.');
+        return;
+      }
+
+      const btn = document.getElementById('submitBtn');
+      btn.disabled = true;
+      btn.textContent = 'Mengirim...';
+
+      try {
+        const res = await fetch('/api/vote', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nisn, nama, kelas, candidateId: selectedId })
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          showAlert('error', data.error || 'Terjadi kesalahan, coba lagi.');
+          btn.disabled = false;
+          btn.textContent = 'Kirim Suara Saya';
+          return;
+        }
+
+        document.getElementById('voteForm').innerHTML = '';
+        document.querySelector('main').insertAdjacentHTML(
+          'beforeend',
+          `<div class="card" style="max-width:480px; text-align:center;">
+            <h2 style="margin-top:0;">✅ Terima kasih!</h2>
+            <p>Suaramu berhasil direkam. Kamu bisa melihat hasil sementara di halaman Hasil.</p>
+            <a href="/hasil" class="btn btn-primary">Lihat Hasil</a>
+          </div>`
+        );
+      } catch (err) {
+        console.error(err);
+        showAlert('error', 'Gagal terhubung ke server. Coba lagi.');
+        btn.disabled = false;
+        btn.textContent = 'Kirim Suara Saya';
+      }
+    });
+
+    loadStatus();
+    loadCandidates();
+  </script>
+</body>
+</html>

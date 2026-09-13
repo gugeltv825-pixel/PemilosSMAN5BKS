@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hasil | Pemilos SMAN 5 BKS</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <nav class="navbar">
+    <div class="container">
+      <a class="brand" href="/">
+        <span class="logo">P</span>
+        <span>Pemilos SMAN 5 BKS</span>
+      </a>
+      <div class="nav-links">
+        <a href="/">Beranda</a>
+        <a href="/vote">Voting</a>
+        <a href="/hasil" class="active">Hasil</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container" style="padding-top: 34px; padding-bottom: 60px;">
+    <div class="refresh-row">
+      <div>
+        <h1 class="section-title" style="margin-bottom:2px;">Hasil Perhitungan Suara</h1>
+        <p class="muted-small" id="statusLine">Memuat data...</p>
+      </div>
+      <div class="muted-small" id="lastUpdate"></div>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-box">
+        <div class="num" id="totalSuara">0</div>
+        <div class="label">Total Suara Masuk</div>
+      </div>
+      <div class="stat-box">
+        <div class="num" id="totalKandidat">0</div>
+        <div class="label">Jumlah Pasangan Calon</div>
+      </div>
+      <div class="stat-box">
+        <div class="num" id="pemimpin">-</div>
+        <div class="label">Perolehan Suara Tertinggi Sementara</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div id="resultList"></div>
+    </div>
+  </main>
+
+  <p class="footer-note">Hasil diperbarui otomatis setiap 5 detik. Halaman ini terpisah dari halaman voting agar pemilih tidak terpengaruh saat memilih.</p>
+
+  <script>
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str || '';
+      return div.innerHTML;
+    }
+
+    async function loadResults() {
+      try {
+        const res = await fetch('/api/results');
+        const data = await res.json();
+
+        document.getElementById('statusLine').textContent = data.votingOpen
+          ? 'Pemungutan suara masih berlangsung — hasil bersifat sementara.'
+          : 'Pemungutan suara telah ditutup.';
+        document.getElementById('totalSuara').textContent = data.totalSuara;
+        document.getElementById('totalKandidat').textContent = data.kandidat.length;
+        document.getElementById('lastUpdate').textContent =
+          'Diperbarui: ' + new Date().toLocaleTimeString('id-ID');
+
+        const sorted = [...data.kandidat].sort((a, b) => b.suara - a.suara);
+        const top = sorted[0];
+        document.getElementById('pemimpin').textContent = top && top.suara > 0
+          ? `No. ${top.nomor_urut} — ${top.suara} suara`
+          : '-';
+
+        const max = Math.max(1, ...data.kandidat.map((c) => c.suara));
+        const list = document.getElementById('resultList');
+        list.innerHTML = sorted
+          .map((c) => {
+            const pct = data.totalSuara ? ((c.suara / data.totalSuara) * 100).toFixed(1) : '0.0';
+            const width = (c.suara / max) * 100;
+            return `
+            <div class="result-item">
+              <div class="result-head">
+                <div>
+                  <span class="name">No. ${c.nomor_urut} — ${escapeHtml(c.nama_ketua)} &amp; ${escapeHtml(c.nama_wakil)}</span>
+                </div>
+                <div class="count">${c.suara} suara <span class="meta">(${pct}%)</span></div>
+              </div>
+              <div class="bar-track">
+                <div class="bar-fill" style="width:${width}%; background:${c.warna || '#2563eb'}"></div>
+              </div>
+            </div>`;
+          })
+          .join('');
+      } catch (e) {
+        console.error(e);
+        document.getElementById('statusLine').textContent = 'Gagal memuat data hasil.';
+      }
+    }
+
+    loadResults();
+    setInterval(loadResults, 5000);
+  </script>
+</body>
+</html>

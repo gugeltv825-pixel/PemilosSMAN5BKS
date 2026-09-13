@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pemilos SMAN 5 BKS</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <nav class="navbar">
+    <div class="container">
+      <a class="brand" href="/">
+        <span class="logo">P</span>
+        <span>Pemilos SMAN 5 BKS</span>
+      </a>
+      <div class="nav-links">
+        <a href="/" class="active">Beranda</a>
+        <a href="/vote">Voting</a>
+        <a href="/hasil">Hasil</a>
+      </div>
+    </div>
+  </nav>
+
+  <header class="hero container">
+    <div id="statusBadge" class="badge open"><span class="dot"></span> Memuat status...</div>
+    <h1 id="titleText">Pemilihan Ketua &amp; Wakil Ketua OSIS</h1>
+    <p>
+      Gunakan hak suaramu untuk memilih Ketua dan Wakil Ketua OSIS periode berikutnya.
+      Halaman voting dan halaman hasil dipisah agar suara tetap rahasia sampai kamu memilih untuk melihat hasilnya sendiri.
+    </p>
+    <div class="cta-row">
+      <a href="/vote" class="btn btn-primary">🗳️ Mulai Voting</a>
+      <a href="/hasil" class="btn btn-outline">📊 Lihat Hasil Real-time</a>
+    </div>
+  </header>
+
+  <main class="container" style="padding-bottom: 50px;">
+    <div class="candidate-grid" id="preview"></div>
+  </main>
+
+  <p class="footer-note">Setiap NISN hanya dapat digunakan satu kali untuk memilih. Suara bersifat rahasia dan anonim.</p>
+
+  <script>
+    async function loadStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        const badge = document.getElementById('statusBadge');
+        if (data.votingOpen) {
+          badge.className = 'badge open';
+          badge.innerHTML = '<span class="dot"></span> Pemungutan suara sedang dibuka';
+        } else {
+          badge.className = 'badge closed';
+          badge.innerHTML = '<span class="dot"></span> Pemungutan suara ditutup';
+        }
+        if (data.title) document.getElementById('titleText').textContent = data.title;
+        document.title = data.title ? data.title + ' | Pemilos' : 'Pemilos SMAN 5 BKS';
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function loadPreview() {
+      try {
+        const res = await fetch('/api/candidates');
+        const list = await res.json();
+        const wrap = document.getElementById('preview');
+        wrap.innerHTML = list
+          .map(
+            (c) => `
+          <div class="candidate-card" style="cursor: default;">
+            <span class="no-urut">No. ${c.nomor_urut}</span>
+            <div class="avatar" style="background:${c.warna || '#2563eb'}">${initials(c.nama_ketua)}</div>
+            <h3>${escapeHtml(c.nama_ketua)} &amp; ${escapeHtml(c.nama_wakil)}</h3>
+            <div class="kelas">${escapeHtml(c.kelas || '')}</div>
+            <p class="visi">${escapeHtml(c.visi || '')}</p>
+          </div>`
+          )
+          .join('');
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function initials(name) {
+      return (name || '')
+        .split(' ')
+        .map((w) => w[0])
+        .slice(0, 2)
+        .join('')
+        .toUpperCase();
+    }
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str || '';
+      return div.innerHTML;
+    }
+
+    loadStatus();
+    loadPreview();
+  </script>
+</body>
+</html>
