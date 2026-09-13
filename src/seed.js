@@ -1,5 +1,6 @@
-// Menambahkan data kandidat contoh. Jalankan dengan: npm run seed
-const { db } = require('./db');
+// Menambahkan data kandidat contoh ke Supabase. Jalankan dengan: npm run seed
+require('dotenv').config();
+const { getSupabase } = require('./supabase');
 
 const kandidat = [
   {
@@ -31,23 +32,20 @@ const kandidat = [
   }
 ];
 
-const insert = db.prepare(`
-  INSERT INTO candidates (nomor_urut, nama_ketua, nama_wakil, kelas, visi, misi, warna)
-  VALUES (@nomor_urut, @nama_ketua, @nama_wakil, @kelas, @visi, @misi, @warna)
-  ON CONFLICT(nomor_urut) DO UPDATE SET
-    nama_ketua = excluded.nama_ketua,
-    nama_wakil = excluded.nama_wakil,
-    kelas = excluded.kelas,
-    visi = excluded.visi,
-    misi = excluded.misi,
-    warna = excluded.warna
-`);
+async function main() {
+  const db = getSupabase();
+  if (!db) {
+    console.error('SUPABASE_URL / SUPABASE_KEY belum diset di .env');
+    process.exit(1);
+  }
 
-const insertMany = db.transaction((rows) => {
-  for (const row of rows) insert.run(row);
-});
+  const { error } = await db.from('candidates').upsert(kandidat, { onConflict: 'nomor_urut' });
+  if (error) {
+    console.error('Gagal seed data:', error.message);
+    process.exit(1);
+  }
 
-insertMany(kandidat);
+  console.log(`Berhasil menambahkan/memperbarui ${kandidat.length} kandidat contoh.`);
+}
 
-console.log(`Berhasil menambahkan/memperbarui ${kandidat.length} kandidat contoh.`);
-process.exit(0);
+main();

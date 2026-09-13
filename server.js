@@ -1,7 +1,7 @@
 require('dotenv').config();
 const path = require('path');
 const express = require('express');
-const { db, getSetting, setSetting } = require('./src/db');
+const { getSupabase } = require('./src/supabase');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,6 +11,19 @@ const ELECTION_TITLE =
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ---------- Middleware: pastikan Supabase sudah dikonfigurasi ----------
+function requireDb(req, res, next) {
+  const db = getSupabase();
+  if (!db) {
+    return res.status(500).json({
+      error:
+        'Server belum terhubung ke database (SUPABASE_URL / SUPABASE_KEY belum diset).'
+    });
+  }
+  req.db = db;
+  next();
+}
 
 // ---------- Halaman (clean URLs) ----------
 app.get(['/', '/index'], (req, res) => {
@@ -36,29 +49,55 @@ function requireAdmin(req, res, next) {
 }
 
 // ---------- API publik: info pemilihan ----------
-app.get('/api/status', (req, res) => {
-  const totalVoters = db.prepare('SELECT COUNT(*) AS n FROM voters').get().n;
-  res.json({
-    title: ELECTION_TITLE,
-    votingOpen: getSetting('voting_open') === '1',
-    totalVoters
-  });
+app.get('/api/status', requireDb, async (req, res) => {
+  try {
+    const [{ data: setting, error: settingErr }, { count: totalVoters, error: voterErr }] =
+      await Promise.all([
+        req.db.from('settings').select('value').eq('key', 'voting_open').maybeSingle(),
+        req.db.from('voters').select('*', { count: 'exact', head: true })
+      ]);
+    if (settingErr) throw settingErr;
+    if (voterErr) throw voterErr;
+
+    res.json({
+      title: ELECTION_TITLE,
+      votingOpen: setting ? setting.value === '1' : true,
+      totalVoters: totalVoters || 0
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
+  }
 });
 
 // ---------- API publik: daftar kandidat (untuk halaman voting) ----------
-app.get('/api/candidates', (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT id, nomor_urut, nama_ketua, nama_wakil, kelas, visi, misi, foto_url, warna
-       FROM candidates ORDER BY nomor_urut ASC`
-    )
-    .all();
-  res.json(rows);
+app.get('/api/candidates', requireDb, async (req, res) => {
+  const { data, error } = await req.db
+    .from('candidates')
+    .select('id, nomor_urut, nama_ketua, nama_wakil, kelas, visi, misi, foto_url, warna')
+    .order('nomor_urut', { ascending: true });
+
+  if (error) {
+    console.error(error);
+    return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
+  }
+  res.json(data);
 });
 
 // ---------- API publik: kirim suara ----------
-app.post('/api/vote', (req, res) => {
-  const votingOpen = getSetting('voting_open') === '1';
+app.post('/api/vote', requireDb, async (req, res) => {
+  const db = req.db;
+
+  const { data: setting, error: settingErr } = await db
+    .from('settings')
+    .select('value')
+    .eq('key', 'voting_open')
+    .maybeSingle();
+  if (settingErr) {
+    console.error(settingErr);
+    return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
+  }
+  const votingOpen = setting ? setting.value === '1' : true;
   if (!votingOpen) {
     return res.status(403).json({ error: 'Pemungutan suara sedang ditutup.' });
   }
@@ -77,38 +116,35 @@ app.post('/api/vote', (req, res) => {
 
   const nisnClean = String(nisn).trim();
 
-  const candidate = db
-    .prepare('SELECT id FROM candidates WHERE id = ?')
-    .get(candidateId);
+  const { data: candidate, error: candidateErr } = await db
+    .from('candidates')
+    .select('id')
+    .eq('id', candidateId)
+    .maybeSingle();
+  if (candidateErr) {
+    console.error(candidateErr);
+    return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
+  }
   if (!candidate) {
     return res.status(400).json({ error: 'Kandidat tidak ditemukan.' });
   }
 
-  const alreadyVoted = db
-    .prepare('SELECT nisn FROM voters WHERE nisn = ?')
-    .get(nisnClean);
-  if (alreadyVoted) {
-    return res
-      .status(409)
-      .json({ error: 'NISN ini sudah digunakan untuk memilih.' });
+  // Coba catat pemilih dulu (NISN unik) — kalau sudah ada, ditolak (409).
+  const { error: voterInsertErr } = await db
+    .from('voters')
+    .insert({ nisn: nisnClean, nama: String(nama).trim(), kelas: kelas ? String(kelas).trim() : null });
+
+  if (voterInsertErr) {
+    if (voterInsertErr.code === '23505') {
+      return res.status(409).json({ error: 'NISN ini sudah digunakan untuk memilih.' });
+    }
+    console.error(voterInsertErr);
+    return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
   }
 
-  const castVote = db.transaction(() => {
-    db.prepare(
-      'INSERT INTO voters (nisn, nama, kelas) VALUES (?, ?, ?)'
-    ).run(nisnClean, String(nama).trim(), kelas ? String(kelas).trim() : null);
-    db.prepare('INSERT INTO votes (candidate_id) VALUES (?)').run(candidate.id);
-  });
-
-  try {
-    castVote();
-  } catch (err) {
-    if (String(err.message).includes('UNIQUE')) {
-      return res
-        .status(409)
-        .json({ error: 'NISN ini sudah digunakan untuk memilih.' });
-    }
-    console.error(err);
+  const { error: voteInsertErr } = await db.from('votes').insert({ candidate_id: candidate.id });
+  if (voteInsertErr) {
+    console.error(voteInsertErr);
     return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
   }
 
@@ -116,26 +152,28 @@ app.post('/api/vote', (req, res) => {
 });
 
 // ---------- API publik: hasil (halaman hasil terpisah dari halaman voting) ----------
-app.get('/api/results', (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT c.id, c.nomor_urut, c.nama_ketua, c.nama_wakil, c.warna,
-              COUNT(v.id) AS suara
-       FROM candidates c
-       LEFT JOIN votes v ON v.candidate_id = c.id
-       GROUP BY c.id
-       ORDER BY c.nomor_urut ASC`
-    )
-    .all();
+app.get('/api/results', requireDb, async (req, res) => {
+  const db = req.db;
 
-  const totalSuara = rows.reduce((sum, r) => sum + r.suara, 0);
-  const totalVoters = db.prepare('SELECT COUNT(*) AS n FROM voters').get().n;
+  const [{ data: rows, error: resultsErr }, { data: setting, error: settingErr }, { count: totalVoters, error: voterErr }] =
+    await Promise.all([
+      db.from('results_view').select('*'),
+      db.from('settings').select('value').eq('key', 'voting_open').maybeSingle(),
+      db.from('voters').select('*', { count: 'exact', head: true })
+    ]);
+
+  if (resultsErr || settingErr || voterErr) {
+    console.error(resultsErr || settingErr || voterErr);
+    return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
+  }
+
+  const totalSuara = rows.reduce((sum, r) => sum + Number(r.suara), 0);
 
   res.json({
     title: ELECTION_TITLE,
-    votingOpen: getSetting('voting_open') === '1',
+    votingOpen: setting ? setting.value === '1' : true,
     totalSuara,
-    totalVoters,
+    totalVoters: totalVoters || 0,
     kandidat: rows
   });
 });
@@ -145,23 +183,41 @@ app.get('/api/admin/check', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/admin/summary', requireAdmin, (req, res) => {
-  const totalVoters = db.prepare('SELECT COUNT(*) AS n FROM voters').get().n;
-  const totalVotes = db.prepare('SELECT COUNT(*) AS n FROM votes').get().n;
+app.get('/api/admin/summary', requireDb, requireAdmin, async (req, res) => {
+  const db = req.db;
+  const [{ count: totalVoters, error: voterErr }, { count: totalVotes, error: voteErr }, { data: setting, error: settingErr }] =
+    await Promise.all([
+      db.from('voters').select('*', { count: 'exact', head: true }),
+      db.from('votes').select('*', { count: 'exact', head: true }),
+      db.from('settings').select('value').eq('key', 'voting_open').maybeSingle()
+    ]);
+
+  if (voterErr || voteErr || settingErr) {
+    console.error(voterErr || voteErr || settingErr);
+    return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
+  }
+
   res.json({
-    votingOpen: getSetting('voting_open') === '1',
-    totalVoters,
-    totalVotes
+    votingOpen: setting ? setting.value === '1' : true,
+    totalVoters: totalVoters || 0,
+    totalVotes: totalVotes || 0
   });
 });
 
-app.post('/api/admin/voting-status', requireAdmin, (req, res) => {
+app.post('/api/admin/voting-status', requireDb, requireAdmin, async (req, res) => {
   const { open } = req.body || {};
-  setSetting('voting_open', open ? '1' : '0');
-  res.json({ votingOpen: open ? true : false });
+  const { error } = await req.db
+    .from('settings')
+    .upsert({ key: 'voting_open', value: open ? '1' : '0' }, { onConflict: 'key' });
+
+  if (error) {
+    console.error(error);
+    return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
+  }
+  res.json({ votingOpen: !!open });
 });
 
-app.post('/api/admin/candidates', requireAdmin, (req, res) => {
+app.post('/api/admin/candidates', requireDb, requireAdmin, async (req, res) => {
   const {
     nomor_urut,
     nama_ketua,
@@ -179,70 +235,95 @@ app.post('/api/admin/candidates', requireAdmin, (req, res) => {
       .json({ error: 'Nomor urut, nama ketua, dan nama wakil wajib diisi.' });
   }
 
-  try {
-    const info = db
-      .prepare(
-        `INSERT INTO candidates (nomor_urut, nama_ketua, nama_wakil, kelas, visi, misi, foto_url, warna)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        nomor_urut,
-        nama_ketua,
-        nama_wakil,
-        kelas || null,
-        visi || null,
-        misi || null,
-        foto_url || null,
-        warna || '#2563eb'
-      );
-    res.status(201).json({ id: info.lastInsertRowid });
-  } catch (err) {
-    if (String(err.message).includes('UNIQUE')) {
+  const { data, error } = await req.db
+    .from('candidates')
+    .insert({
+      nomor_urut,
+      nama_ketua,
+      nama_wakil,
+      kelas: kelas || null,
+      visi: visi || null,
+      misi: misi || null,
+      foto_url: foto_url || null,
+      warna: warna || '#2563eb'
+    })
+    .select('id')
+    .single();
+
+  if (error) {
+    if (error.code === '23505') {
       return res.status(409).json({ error: 'Nomor urut sudah digunakan.' });
     }
-    console.error(err);
-    res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
+    console.error(error);
+    return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
   }
+  res.status(201).json({ id: data.id });
 });
 
-app.put('/api/admin/candidates/:id', requireAdmin, (req, res) => {
+app.put('/api/admin/candidates/:id', requireDb, requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const existing = db.prepare('SELECT * FROM candidates WHERE id = ?').get(id);
+  const { data: existing, error: findErr } = await req.db
+    .from('candidates')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (findErr) {
+    console.error(findErr);
+    return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
+  }
   if (!existing) return res.status(404).json({ error: 'Kandidat tidak ditemukan.' });
 
   const merged = { ...existing, ...req.body };
-  db.prepare(
-    `UPDATE candidates SET nomor_urut = ?, nama_ketua = ?, nama_wakil = ?, kelas = ?,
-     visi = ?, misi = ?, foto_url = ?, warna = ? WHERE id = ?`
-  ).run(
-    merged.nomor_urut,
-    merged.nama_ketua,
-    merged.nama_wakil,
-    merged.kelas,
-    merged.visi,
-    merged.misi,
-    merged.foto_url,
-    merged.warna,
-    id
-  );
+  const { error: updateErr } = await req.db
+    .from('candidates')
+    .update({
+      nomor_urut: merged.nomor_urut,
+      nama_ketua: merged.nama_ketua,
+      nama_wakil: merged.nama_wakil,
+      kelas: merged.kelas,
+      visi: merged.visi,
+      misi: merged.misi,
+      foto_url: merged.foto_url,
+      warna: merged.warna
+    })
+    .eq('id', id);
+
+  if (updateErr) {
+    console.error(updateErr);
+    return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
+  }
   res.json({ success: true });
 });
 
-app.delete('/api/admin/candidates/:id', requireAdmin, (req, res) => {
-  db.prepare('DELETE FROM candidates WHERE id = ?').run(req.params.id);
+app.delete('/api/admin/candidates/:id', requireDb, requireAdmin, async (req, res) => {
+  const { error } = await req.db.from('candidates').delete().eq('id', req.params.id);
+  if (error) {
+    console.error(error);
+    return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
+  }
   res.json({ success: true });
 });
 
 // Reset total (hapus semua suara & daftar pemilih) - dipakai sebelum pemilihan resmi dimulai
-app.post('/api/admin/reset', requireAdmin, (req, res) => {
-  const doReset = db.transaction(() => {
-    db.prepare('DELETE FROM votes').run();
-    db.prepare('DELETE FROM voters').run();
-  });
-  doReset();
+app.post('/api/admin/reset', requireDb, requireAdmin, async (req, res) => {
+  const db = req.db;
+  const [{ error: votesErr }, { error: votersErr }] = await Promise.all([
+    db.from('votes').delete().gt('id', 0),
+    db.from('voters').delete().neq('nisn', '')
+  ]);
+
+  if (votesErr || votersErr) {
+    console.error(votesErr || votersErr);
+    return res.status(500).json({ error: 'Terjadi kesalahan pada server.' });
+  }
   res.json({ success: true });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server Pemilos berjalan di http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server Pemilos berjalan di http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;
